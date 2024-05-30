@@ -102,7 +102,10 @@ int exec_client(int client_socket) {
             fprintf(stderr, "Failed executing command: %d\n", results.error_code);
             char error_msg[100];
             sprintf(error_msg, "Error executing command: %d\n", results.error_code);
-            write(client_socket, error_msg, strlen(error_msg));
+            snprintf(error_msg, sizeof(error_msg), "Error executing command: %d\n", results.error_code);
+            if (write(client_socket, error_msg, strlen(error_msg))< 0){
+                perror("Failed writing error message to client");
+            }
             return -1;
         }
 
