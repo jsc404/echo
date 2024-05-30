@@ -101,11 +101,14 @@ int exec_client(int client_socket) {
         if (results.error_code != EXEC_SUCCESS) {
             fprintf(stderr, "Failed executing command: %d\n", results.error_code);
             char error_msg[100];
-            sprintf(error_msg, "Error executing command: %d\n", results.error_code);
-            snprintf(error_msg, sizeof(error_msg), "Error executing command: %d\n", results.error_code);
-            if (write(client_socket, error_msg, strlen(error_msg))< 0){
+            int ret = snprintf(error_msg, sizeof(error_msg), "Error executing command: %d\n", results.error_code);
+            if (ret < 0 || ret >= sizeof(error_msg)) {
+                perror("snprintf buffer overflow");  
+            } else if (write(client_socket, error_msg, strlen(error_msg))< 0) {
                 perror("Failed writing error message to client");
-            }
+                    }
+
+            free(results.output);
             shutdown(client_socket, SHUT_RDWR);
             close(client_socket);
             return -1;
@@ -159,6 +162,7 @@ ExecResult exec_command(const char *cmd) {
 
     result.output = malloc(EXEC_BUFFER_SUCCESS); 
     if (!result.output) {
+        free(result.output);
         pclose(stream);
         result.error_code = EXEC_ERROR_MEMORY;
         return result;
