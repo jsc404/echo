@@ -106,12 +106,16 @@ int exec_client(int client_socket) {
             if (write(client_socket, error_msg, strlen(error_msg))< 0){
                 perror("Failed writing error message to client");
             }
+            shutdown(client_socket, SHUT_RDWR);
+            close(client_socket);
             return -1;
         }
 
         if (write(client_socket, results.output, results.bytes_in_output) < 0) {
             perror("Failed writing message to client");
             free(results.output);
+            shutdown(client_socket, SHUT_RDWR);
+            close(client_socket);
             return -1;
         }
         free(results.output);
