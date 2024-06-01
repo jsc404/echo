@@ -15,7 +15,8 @@
 #define EXEC_ERROR_MEMORY -2
 #define EXEC_ERROR_COMMAND -3
 
-typedef struct {
+typedef struct
+{
     char *output;
     size_t bytes_in_output;
     int error_code;
@@ -25,21 +26,24 @@ ExecResult exec_command(const char *cmd);
 
 /**
  * Creates and binds a server socket to the specified port.
- * 
+ *
  * @param port The port number to bind the server socket to.
  * @return The file descriptor of the server socket on success, -1 on failure.
  */
-int create_and_bind_server_socket(int port) {
+int create_and_bind_server_socket(int port)
+{
     int server_fd;
     struct sockaddr_in address;
     int opt = 1;
 
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+    {
         perror("Socket creation failed");
         return -1;
     }
 
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)))
+    {
         perror("setsockopt");
         close(server_fd);
         return -1;
@@ -50,7 +54,8 @@ int create_and_bind_server_socket(int port) {
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(port);
 
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
+    {
         fprintf(stderr, "Binding to port %d failed\n", port);
         close(server_fd);
         return -1;
@@ -61,79 +66,129 @@ int create_and_bind_server_socket(int port) {
 
 /**
  * Accepts a new connection on the given server socket.
- * 
+ *
  * @param server_fd The file descriptor of the server socket.
  * @return The file descriptor of the accepted connection, or -1 on failure.
  */
-int accept_connection(int server_fd) {
+int accept_connection(int server_fd)
+{
     struct sockaddr_in client_addr;
     socklen_t addrlen = sizeof(client_addr);
 
     int new_socket = accept(server_fd, (struct sockaddr *)&client_addr, &addrlen);
-    if (new_socket < 0) {
+    if (new_socket < 0)
+    {
         perror("Accept failed");
     }
 
     return new_socket;
 }
 
-
 /**
- * Executes the received data as command on the server.
- * 
+ * Executes received data as a command on the server.
+ *
  * @param client_socket The file descriptor of the client socket.
- * @return Returns the bytes read, or 0 for graceful shutdown, or -1 for error.
+ * @return Number of bytes in the last message, 0 for graceful shutdown, or -1 for error.
  */
-int exec_client(int client_socket) {
-    char buffer[BUFFER_SIZE];
+int exec_client(int client_socket)
+{
+    char *buffer = malloc(BUFFER_SIZE);
+    size_t buffer_size = BUFFER_SIZE;
+    size_t bytes_in_buffer = 0;
+    int message_complete = 0;
     int bytes_read;
 
-    while ((bytes_read = read(client_socket, buffer, BUFFER_SIZE)) > 0) {
-        if (bytes_read < BUFFER_SIZE) {
-            buffer[bytes_read] = '\0';
-        } else {
-            buffer[BUFFER_SIZE - 1] = '\0';
+    while ((bytes_read = read(client_socket, buffer + bytes_in_buffer, buffer_size - bytes_in_buffer - 1)) > 0)
+    {
+        bytes_in_buffer += bytes_read;
+
+        // Check if we need to resize the buffer
+        if (bytes_in_buffer >= buffer_size - 1)
+        {
+            buffer_size *= 2;
+            buffer = realloc(buffer, buffer_size);
+            if (buffer == NULL)
+            {
+                perror("Failed to reallocate buffer");
+                free(buffer);
+                return -1;
+            }
         }
 
-        printf("Received message: %s\n", buffer);
-        ExecResult results;
-        results = exec_command(buffer);
-        if (results.error_code != EXEC_SUCCESS) {
-            fprintf(stderr, "Failed executing command: %d\n", results.error_code);
-            char error_msg[100];
-            int ret = snprintf(error_msg, sizeof(error_msg), "Error executing command: %d\n", results.error_code);
-            if (ret < 0 || ret >= sizeof(error_msg)) {
-                perror("snprintf buffer overflow");  
-            } else if (write(client_socket, error_msg, strlen(error_msg))< 0) {
-                perror("Failed writing error message to client");
-                    }
+        buffer[bytes_in_buffer] = '\0'; // Null-terminate to treat as string
 
+        // Check for message delimiter ("\r\n")
+        if (bytes_in_buffer >= 2 && buffer[bytes_in_buffer - 2] == '\r' && buffer[bytes_in_buffer - 1] == '\n')
+        {
+            message_complete = 1;
+        }
+
+        if (message_complete)
+        {
+            // Remove delimiter
+            buffer[bytes_in_buffer - 2] = '\0';
+
+            printf("Received message: %s\n", buffer);
+
+            ExecResult results;
+            results = exec_command(buffer);
+            if (results.error_code != EXEC_SUCCESS)
+            {
+                fprintf(stderr, "Failed executing command: %d\n", results.error_code);
+                char error_msg[100];
+                int ret = snprintf(error_msg, sizeof(error_msg), "Error executing command: %d\n", results.error_code);
+                if (ret < 0 || ret >= sizeof(error_msg))
+                {
+                    perror("snprintf buffer overflow");
+                }
+                else if (write(client_socket, error_msg, strlen(error_msg)) < 0)
+                {
+                    perror("Failed writing error message to client");
+                }
+
+                free(results.output);
+                shutdown(client_socket, SHUT_RDWR);
+                close(client_socket);
+                return -1;
+            }
+
+            if (write(client_socket, results.output, results.bytes_in_output) < 0)
+            {
+                perror("Failed writing message to client");
+                free(results.output);
+                shutdown(client_socket, SHUT_RDWR);
+                close(client_socket);
+                return -1;
+            }
             free(results.output);
-            shutdown(client_socket, SHUT_RDWR);
-            close(client_socket);
-            return -1;
-        }
 
-        if (write(client_socket, results.output, results.bytes_in_output) < 0) {
-            perror("Failed writing message to client");
-            free(results.output);
-            shutdown(client_socket, SHUT_RDWR);
-            close(client_socket);
-            return -1;
+            // Reset for next message
+            bytes_in_buffer = 0;
+            message_complete = 0;
         }
-        free(results.output);
     }
 
-    if (bytes_read == 0) {
+    // Handle cases where the connection is closed without a final \r\n
+    if (bytes_in_buffer > 0)
+    {
+        printf("Received incomplete message: %s\n", buffer);
+    }
+
+    free(buffer);
+
+    if (bytes_read == 0)
+    {
         printf("Client closed connection gracefully.\n");
-    } else if (bytes_read < 0) {
+    }
+    else if (bytes_read < 0)
+    {
         perror("Failed reading bytes");
     }
 
     shutdown(client_socket, SHUT_RDWR);
     close(client_socket);
 
-    return bytes_read;
+    return message_complete ? bytes_in_buffer : -1;
 }
 
 /**
@@ -204,28 +259,31 @@ ExecResult exec_command(const char *cmd) {
     return result;
 }
 
-
 /**
  * Echos received data back to the sender.
- * 
+ *
  * @param client_socket The file descriptor of the client socket.
  * @return Returns the bytes read, or 0 for graceful shutdown, or -1 for error.
  */
-int echo_client(int client_socket) {
+int echo_client(int client_socket)
+{
     char buffer[BUFFER_SIZE + 1];
     int bytes_read;
 
-    while ((bytes_read = read(client_socket, buffer, BUFFER_SIZE - 1)) > 0) {
+    while ((bytes_read = read(client_socket, buffer, BUFFER_SIZE - 1)) > 0)
+    {
         buffer[bytes_read] = '\0';
         printf("Received message: %s\n", buffer);
 
-        if (write(client_socket, buffer, bytes_read) < 0) {
+        if (write(client_socket, buffer, bytes_read) < 0)
+        {
             perror("Failed writing message to client");
             return -1;
         }
     }
 
-    if (bytes_read < 0) {
+    if (bytes_read < 0)
+    {
         perror("Failed reading bytes");
         return -1;
     }
@@ -237,20 +295,23 @@ int echo_client(int client_socket) {
 
 /**
  * Validates the port number argument.
- * 
+ *
  * @param port The port number as a string.
  * @return The port number as an integer on success, -1 on failure.
  */
-int validate_port_argument(char *port) {
+int validate_port_argument(char *port)
+{
     char *endptr;
     long port_long = strtol(port, &endptr, 10);
 
-    if (endptr == port || *endptr != '\0') {
+    if (endptr == port || *endptr != '\0')
+    {
         fprintf(stderr, "Invalid port number: %s\n", port);
         return -1;
     }
 
-    if (port_long <= 0 || port_long > 65535) {
+    if (port_long <= 0 || port_long > 65535)
+    {
         fprintf(stderr, "Port number must be between 1 and 65535\n");
         return -1;
     }
@@ -258,39 +319,45 @@ int validate_port_argument(char *port) {
     return (int)port_long;
 }
 
-void handle_sigint(int sig) {
+void handle_sigint(int sig)
+{
     printf("Caught signal %d, shutting down server...\n", sig);
     exit(EXIT_SUCCESS);
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
     signal(SIGINT, handle_sigint);
 
-    if (argc < 3 || argv[1] == NULL || argv[2] == NULL) {
+    if (argc < 3 || argv[1] == NULL || argv[2] == NULL)
+    {
         fprintf(stderr, "Usage: %s <port> <mode>\n", argv[0]);
         fprintf(stderr, "Valid modes: echo, exec\n");
         return EXIT_FAILURE;
     }
 
     char *mode = argv[2];
-    if (strcmp(mode, "echo") != 0 && strcmp(mode, "exec") != 0) {
+    if (strcmp(mode, "echo") != 0 && strcmp(mode, "exec") != 0)
+    {
         fprintf(stderr, "Invalid mode: %s\n", mode);
         fprintf(stderr, "Valid modes: echo, exec\n");
         return EXIT_FAILURE;
     }
 
-
     int port = validate_port_argument(argv[1]);
-    if (port == -1) {
+    if (port == -1)
+    {
         return EXIT_FAILURE;
     }
 
     int server_fd = create_and_bind_server_socket(port);
-    if (server_fd == -1) {
+    if (server_fd == -1)
+    {
         return EXIT_FAILURE;
     }
 
-    if (listen(server_fd, 1) < 0) {
+    if (listen(server_fd, 1) < 0)
+    {
         perror("Listening failed");
         close(server_fd);
         return EXIT_FAILURE;
@@ -299,25 +366,32 @@ int main(int argc, char *argv[]) {
     printf("Server listening on port %d...\n", port);
 
     int new_socket = accept_connection(server_fd);
-    if (new_socket < 0) {
+    if (new_socket < 0)
+    {
         close(server_fd);
         return EXIT_FAILURE;
     }
 
     printf("New connection accepted\n");
 
-    int (*client_handler)(int); 
-    if (strcmp(mode, "echo") == 0) {
+    int (*client_handler)(int);
+    if (strcmp(mode, "echo") == 0)
+    {
         client_handler = echo_client;
-    } else if (strcmp(mode, "exec") == 0) {
+    }
+    else if (strcmp(mode, "exec") == 0)
+    {
         client_handler = exec_client;
-    } else {
+    }
+    else
+    {
         fprintf(stderr, "Internal error: Invalid mode\n");
         close(new_socket);
     }
 
     int res = client_handler(new_socket);
-    if (res < 0) {
+    if (res < 0)
+    {
         perror("Echoing client failed");
         close(server_fd);
         return EXIT_FAILURE;
